@@ -4222,7 +4222,7 @@ static const struct option {
 	  "		[ tx-lpi on|off ]\n"
 	  "		[ tx-timer %d ]\n"},
 	{ "--set-perqueue-command", 1, do_perqueue, "Set per queue command. "
-	  "The supported sub commands include --show-coalesce",
+	  "The supported sub commands include --show-coalesce, --coalesce",
 	  "		[queue_mask %x] SUB_COMMAND\n"},
 	{ "-h|--help", 0, show_usage, "Show this help" },
 	{ "--version", 0, do_version, "Show version number" },
@@ -4348,6 +4348,52 @@ get_per_queue_coalesce(struct cmd_context *ctx,
 	return per_queue_opt;
 }
 
+static void __set_per_queue_coalesce(int queue)
+{
+	int changed = 0;
+
+	do_generic_set(cmdline_coalesce, ARRAY_SIZE(cmdline_coalesce),
+		       &changed);
+
+	if (!changed)
+		fprintf(stderr, "Queue %d, no coalesce parameters changed\n", queue);
+}
+
+static void set_per_queue_coalesce(struct cmd_context *ctx,
+				   struct ethtool_per_queue_op *per_queue_opt)
+{
+	__u32 *queue_mask = per_queue_opt->queue_mask;
+	char *addr = (char *)per_queue_opt + sizeof(*per_queue_opt);
+	int gcoalesce_changed = 0;
+	int i;
+
+	parse_generic_cmdline(ctx, &gcoalesce_changed,
+			      cmdline_coalesce, ARRAY_SIZE(cmdline_coalesce));
+
+	for (i = 0; i < __KERNEL_DIV_ROUND_UP(MAX_NUM_QUEUE, 32); i++) {
+		int queue = i * 32;
+		__u32 mask = queue_mask[i];
+
+		while (mask > 0) {
+			if (mask & 0x1) {
+				memcpy(&s_ecoal, addr, sizeof(struct ethtool_coalesce));
+				__set_per_queue_coalesce(queue);
+				memcpy(addr, &s_ecoal, sizeof(struct ethtool_coalesce));
+				addr += sizeof(struct ethtool_coalesce);
+			}
+			mask = mask >> 1;
+			queue++;
+		}
+	}
+
+	per_queue_opt->cmd = ETHTOOL_PERQUEUE;
+	per_queue_opt->sub_command = ETHTOOL_SCOALESCE;
+
+	if (send_ioctl(ctx, per_queue_opt))
+		perror("Cannot set device per queue parameters");
+
+}
+
 static int do_perqueue(struct cmd_context *ctx)
 {
 	struct ethtool_per_queue_op *per_queue_opt;
@@ -4396,6 +4442,16 @@ static int do_perqueue(struct cmd_context *ctx)
 			return -EFAULT;
 		}
 		dump_per_queue_coalesce(per_queue_opt, queue_mask);
+		free(per_queue_opt);
+	} else if (strstr(args[i].opts, "--coalesce") != NULL) {
+		ctx->argc--;
+		ctx->argp++;
+		per_queue_opt = get_per_queue_coalesce(ctx, queue_mask, n_queues);
+		if (per_queue_opt == NULL) {
+			perror("Cannot get device per queue parameters");
+			return -EFAULT;
+		}
+		set_per_queue_coalesce(ctx, per_queue_opt);
 		free(per_queue_opt);
 	} else {
 		perror("The subcommand is not supported yet");
